@@ -1,0 +1,303 @@
+-- =====================================================
+-- MySQL版本 - 嵌套查询
+-- 文件: 06_subqueries.sql
+-- 功能: 各种嵌套子查询操作示例
+-- =====================================================
+
+USE TPC_H;
+
+-- =====================================================
+-- 1. 包含IN谓词的子查询
+-- =====================================================
+
+-- 基本IN子查询示例
+SELECT SUM(L_QUANTITY) 
+FROM LINEITEM 
+WHERE L_PARTKEY IN (
+    SELECT P_PARTKEY
+    FROM PART
+    WHERE P_CONTAINER = 'MED CASE'
+);
+
+-- 【例4-35】带有IN子查询的嵌套查询执行
+SELECT 
+    P_BRAND, 
+    P_TYPE, 
+    P_SIZE, 
+    COUNT(DISTINCT PS_SUPPKEY) as supplier_cnt
+FROM PARTSUPP, PART
+WHERE P_PARTKEY = PS_PARTKEY 
+  AND P_BRAND <> 'Brand#45'
+  AND P_TYPE NOT LIKE 'MEDIUM POLISHED%'
+  AND P_SIZE IN (49, 14, 23, 45, 19, 3, 36, 9)
+  AND PS_SUPPKEY NOT IN (
+      SELECT S_SUPPKEY
+      FROM SUPPLIER
+      WHERE S_COMMENT LIKE '%Customer%Complaints%'
+  )
+GROUP BY P_BRAND, P_TYPE, P_SIZE
+ORDER BY supplier_cnt DESC, P_BRAND, P_TYPE, P_SIZE
+LIMIT 20;
+
+-- 上述查询的连接等价形式
+SELECT 
+    P_BRAND, 
+    P_TYPE, 
+    P_SIZE, 
+    COUNT(DISTINCT PS_SUPPKEY) as supplier_cnt
+FROM PARTSUPP, PART, SUPPLIER
+WHERE P_PARTKEY = PS_PARTKEY 
+  AND S_SUPPKEY = PS_SUPPKEY
+  AND P_BRAND <> 'Brand#45' 
+  AND P_TYPE NOT LIKE 'MEDIUM POLISHED%'
+  AND P_SIZE IN (49, 14, 23, 45, 19, 3, 36, 9) 
+  AND S_COMMENT NOT LIKE '%Customer%Complaints%'
+GROUP BY P_BRAND, P_TYPE, P_SIZE
+ORDER BY supplier_cnt DESC, P_BRAND, P_TYPE, P_SIZE
+LIMIT 20;
+
+-- 【例4-36】通过IN子查询完成CUSTOMER、NATION与REGION表间的查询，统计ASIA地区顾客的数量
+SELECT COUNT(*) as asia_customers
+FROM CUSTOMER 
+WHERE C_NATIONKEY IN (
+    SELECT N_NATIONKEY 
+    FROM NATION 
+    WHERE N_REGIONKEY IN (
+        SELECT R_REGIONKEY 
+        FROM REGION
+        WHERE R_NAME = 'ASIA'
+    )
+);
+
+-- 连接查询等价形式
+SELECT COUNT(*) as asia_customers
+FROM CUSTOMER, NATION, REGION
+WHERE C_NATIONKEY = N_NATIONKEY 
+  AND N_REGIONKEY = R_REGIONKEY
+  AND R_NAME = 'ASIA';
+
+-- =====================================================
+-- 2. 带有比较运算符的相关子查询
+-- =====================================================
+
+-- 【例4-37】带有=比较运算符的子查询
+SELECT 
+    S_ACCTBAL, 
+    S_NAME, 
+    N_NAME, 
+    P_PARTKEY, 
+    P_MFGR, 
+    S_ADDRESS, 
+    S_PHONE, 
+    S_COMMENT
+FROM PART, SUPPLIER, PARTSUPP, NATION, REGION
+WHERE P_PARTKEY = PS_PARTKEY 
+  AND S_SUPPKEY = PS_SUPPKEY
+  AND P_SIZE = 15 
+  AND P_TYPE LIKE '%BRASS'
+  AND S_NATIONKEY = N_NATIONKEY 
+  AND N_REGIONKEY = R_REGIONKEY
+  AND R_NAME = 'EUROPE' 
+  AND PS_SUPPLYCOST = (
+      SELECT MIN(PS_SUPPLYCOST)
+      FROM PARTSUPP, SUPPLIER, NATION, REGION
+      WHERE P_PARTKEY = PS_PARTKEY 
+        AND S_SUPPKEY = PS_SUPPKEY
+        AND S_NATIONKEY = N_NATIONKEY 
+        AND N_REGIONKEY = R_REGIONKEY
+        AND R_NAME = 'EUROPE'
+  )
+ORDER BY S_ACCTBAL DESC, N_NAME, S_NAME, P_PARTKEY
+LIMIT 20;
+
+-- 使用CTE改写相关子查询
+WITH ps_supplycost_table AS (
+    SELECT 
+        MIN(PS_SUPPLYCOST) as min_supplycost, 
+        P_PARTKEY as partkey
+    FROM PARTSUPP, SUPPLIER, NATION, REGION, PART
+    WHERE P_PARTKEY = PS_PARTKEY 
+      AND S_SUPPKEY = PS_SUPPKEY
+      AND P_SIZE = 15 
+      AND P_TYPE LIKE '%BRASS'
+      AND S_NATIONKEY = N_NATIONKEY 
+      AND N_REGIONKEY = R_REGIONKEY 
+      AND R_NAME = 'EUROPE'
+    GROUP BY P_PARTKEY 
+)
+SELECT
+    S_ACCTBAL, 
+    S_NAME, 
+    N_NAME, 
+    P_PARTKEY, 
+    PS_SUPPLYCOST, 
+    P_MFGR, 
+    S_ADDRESS, 
+    S_PHONE, 
+    S_COMMENT
+FROM PART, SUPPLIER, PARTSUPP, NATION, REGION, ps_supplycost_table
+WHERE P_PARTKEY = PS_PARTKEY 
+  AND S_SUPPKEY = PS_SUPPKEY
+  AND partkey = P_PARTKEY
+  AND PS_SUPPLYCOST = min_supplycost
+  AND P_SIZE = 15 
+  AND P_TYPE LIKE '%BRASS'
+  AND S_NATIONKEY = N_NATIONKEY 
+  AND N_REGIONKEY = R_REGIONKEY
+  AND R_NAME = 'EUROPE' 
+ORDER BY S_ACCTBAL DESC, N_NAME, S_NAME, P_PARTKEY
+LIMIT 20;
+
+-- =====================================================
+-- 3. 带有ANY或ALL谓词的子查询
+-- =====================================================
+
+-- 【例4-38】统计LINEITEM表中L_EXTENDEDPRICE大于任何一个中国供应商订单L_EXTENDEDPRICE记录的数量
+SELECT COUNT(*) as count_greater_than_any_china
+FROM LINEITEM 
+WHERE L_EXTENDEDPRICE > ANY (
+    SELECT L_EXTENDEDPRICE 
+    FROM LINEITEM, SUPPLIER, NATION
+    WHERE L_SUPPKEY = S_SUPPKEY 
+      AND S_NATIONKEY = N_NATIONKEY 
+      AND N_NAME = 'CHINA'
+);
+
+-- >ANY子查询可以改写为子查询中的最小值
+SELECT COUNT(*) as count_greater_than_min_china
+FROM LINEITEM 
+WHERE L_EXTENDEDPRICE > (
+    SELECT MIN(L_EXTENDEDPRICE) 
+    FROM LINEITEM, SUPPLIER, NATION
+    WHERE L_SUPPKEY = S_SUPPKEY 
+      AND S_NATIONKEY = N_NATIONKEY 
+      AND N_NAME = 'CHINA'
+);
+
+-- 显示中国供应商的价格范围
+SELECT 
+    MIN(L_EXTENDEDPRICE) as min_price, 
+    MAX(L_EXTENDEDPRICE) as max_price,
+    AVG(L_EXTENDEDPRICE) as avg_price
+FROM LINEITEM, SUPPLIER, NATION
+WHERE L_SUPPKEY = S_SUPPKEY 
+  AND S_NATIONKEY = N_NATIONKEY 
+  AND N_NAME = 'CHINA';
+
+-- 使用ALL谓词的示例
+SELECT COUNT(*) as count_greater_than_all_china
+FROM LINEITEM 
+WHERE L_EXTENDEDPRICE > ALL (
+    SELECT L_EXTENDEDPRICE 
+    FROM LINEITEM, SUPPLIER, NATION
+    WHERE L_SUPPKEY = S_SUPPKEY 
+      AND S_NATIONKEY = N_NATIONKEY 
+      AND N_NAME = 'CHINA'
+);
+
+-- >ALL等价于大于最大值
+SELECT COUNT(*) as count_greater_than_max_china
+FROM LINEITEM 
+WHERE L_EXTENDEDPRICE > (
+    SELECT MAX(L_EXTENDEDPRICE) 
+    FROM LINEITEM, SUPPLIER, NATION
+    WHERE L_SUPPKEY = S_SUPPKEY 
+      AND S_NATIONKEY = N_NATIONKEY 
+      AND N_NAME = 'CHINA'
+);
+
+-- =====================================================
+-- 4. 带有EXISTS谓词的子查询
+-- =====================================================
+
+-- 【例4-39】分析EXISTS子查询的作用
+SELECT O_ORDERPRIORITY, COUNT(*) as order_count
+FROM ORDERS
+WHERE O_ORDERDATE >= '1993-07-01' 
+  AND O_ORDERDATE < DATE_ADD('1993-07-01', INTERVAL 3 MONTH)
+  AND EXISTS (
+      SELECT 1
+      FROM LINEITEM
+      WHERE L_ORDERKEY = O_ORDERKEY 
+        AND L_COMMITDATE < L_RECEIPTDATE
+  )
+GROUP BY O_ORDERPRIORITY
+ORDER BY O_ORDERPRIORITY;
+
+-- EXISTS的连接等价形式
+SELECT O_ORDERPRIORITY, COUNT(DISTINCT O_ORDERKEY) as order_count
+FROM ORDERS, LINEITEM
+WHERE O_ORDERDATE >= '1993-07-01' 
+  AND O_ORDERDATE < DATE_ADD('1993-07-01', INTERVAL 3 MONTH)
+  AND L_ORDERKEY = O_ORDERKEY 
+  AND L_COMMITDATE < L_RECEIPTDATE
+GROUP BY O_ORDERPRIORITY
+ORDER BY O_ORDERPRIORITY;
+
+-- NOT EXISTS示例：查找没有订单的客户
+SELECT C_CUSTKEY, C_NAME
+FROM CUSTOMER
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM ORDERS
+    WHERE O_CUSTKEY = C_CUSTKEY
+)
+LIMIT 10;
+
+-- =====================================================
+-- 5. 复杂嵌套查询示例
+-- =====================================================
+
+-- 查找购买了特定类型零件的客户
+SELECT C_NAME, C_NATIONKEY
+FROM CUSTOMER
+WHERE C_CUSTKEY IN (
+    SELECT O_CUSTKEY
+    FROM ORDERS
+    WHERE O_ORDERKEY IN (
+        SELECT L_ORDERKEY
+        FROM LINEITEM
+        WHERE L_PARTKEY IN (
+            SELECT P_PARTKEY
+            FROM PART
+            WHERE P_TYPE LIKE 'LARGE%'
+        )
+    )
+)
+LIMIT 20;
+
+-- 查找高于平均价格的订单
+SELECT O_ORDERKEY, O_TOTALPRICE
+FROM ORDERS
+WHERE O_TOTALPRICE > (
+    SELECT AVG(O_TOTALPRICE)
+    FROM ORDERS
+)
+ORDER BY O_TOTALPRICE DESC
+LIMIT 20;
+
+-- 查找每个地区最大账户余额的客户
+SELECT C_NAME, C_ACCTBAL, N_NAME, R_NAME
+FROM CUSTOMER, NATION, REGION
+WHERE C_NATIONKEY = N_NATIONKEY
+  AND N_REGIONKEY = R_REGIONKEY
+  AND C_ACCTBAL = (
+      SELECT MAX(C2.C_ACCTBAL)
+      FROM CUSTOMER C2, NATION N2
+      WHERE C2.C_NATIONKEY = N2.N_NATIONKEY
+        AND N2.N_REGIONKEY = R_REGIONKEY
+  )
+ORDER BY R_NAME;
+
+-- 相关子查询：每个供应商的最便宜零件
+SELECT S_NAME, P_NAME, PS_SUPPLYCOST
+FROM SUPPLIER, PART, PARTSUPP
+WHERE S_SUPPKEY = PS_SUPPKEY
+  AND P_PARTKEY = PS_PARTKEY
+  AND PS_SUPPLYCOST = (
+      SELECT MIN(PS2.PS_SUPPLYCOST)
+      FROM PARTSUPP PS2
+      WHERE PS2.PS_SUPPKEY = S_SUPPKEY
+  )
+ORDER BY S_NAME
+LIMIT 20;
